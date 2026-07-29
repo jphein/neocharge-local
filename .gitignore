@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets / env
+.env
+*.env
+tuya-keys.json
+ha-token*
+
+# Backups / scratch
+*.backup
+*.bak
+*.orig
+*.tmp
+
+# Large capture / dump artifacts (keep these out of the repo; they live on gatekeeper /tmp)
+*.pcap
+*.pcapng
+*.json.dump
+*-dump.json
+*.log
+
+# OS / editor
+.DS_Store
+*~

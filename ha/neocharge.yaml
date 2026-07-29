@@ -1,0 +1,183 @@
+# NeoCharge Smart Splitter — local MQTT entities + telemetry heartbeat
+# =====================================================================
+# Full-local takeover (cloud severed) 2026-06-13. Device redirected (gatekeeper
+# DNAT+hairpin SNAT) from NeoCharge cloud (52.53.137.231:1883) to a dedicated
+# anonymous broker on the HA VM (10.0.8.10:1893, container `neocharge-mqtt`),
+# which BRIDGES `log`/`P12-XXX` into core-mosquitto where HA reads/writes them.
+#
+# Device: NeoCharge Smart Splitter, UUID P12-XXX, MAC 48E72994C148, ESP32
+#   (ESP-IDF v4.2.5), rated 50A, plaintext anonymous MQTT (no TLS, no creds).
+#   Right outlet = JuiceBox, left = Bosch 16A EV charger.
+#
+# Protocol: device PUBLISHES full status JSON to `log` ONLY in response to a
+#   server PING (msg:0 on topic `P12-XXX`). Cloud is gone, so the heartbeat
+#   automation below replays that PING every 5 min to keep telemetry flowing.
+#
+# Status JSON (observed): voltage/current/limit/PAUSE/RELAY top-level,
+#   wifi.RSSI nested, uptime, rev. (Payload also leaks wifi.PSWD in cleartext —
+#   we deliberately do NOT surface it.)
+#
+# NOTE: no `device:` block — keeps entity_ids short (sensor.neocharge_*),
+#   matching the owner's convention (juicebox_*) and the dashboard.
+
+mqtt:
+  sensor:
+    - name: "NeoCharge Voltage"
+      unique_id: neocharge_p12_930_voltage
+      state_topic: "log"
+      value_template: "{{ value_json.voltage }}"
+      unit_of_measurement: "V"
+      device_class: voltage
+      state_class: measurement
+      expire_after: 1200
+
+    - name: "NeoCharge Current Limit"
+      unique_id: neocharge_p12_930_limit
+      state_topic: "log"
+      value_template: "{{ value_json.limit }}"
+      unit_of_measurement: "A"
+      device_class: current
+      state_class: measurement
+      icon: "mdi:car-speed-limiter"
+      expire_after: 1200
+
+    - name: "NeoCharge Branch Current Rating"
+      unique_id: neocharge_p12_930_current_rating
+      state_topic: "log"
+      value_template: "{{ value_json.current }}"
+      unit_of_measurement: "A"
+      device_class: current
+      entity_category: diagnostic
+      expire_after: 1200
+
+    - name: "NeoCharge WiFi Signal"
+      unique_id: neocharge_p12_930_rssi
+      state_topic: "log"
+      value_template: "{{ value_json.wifi.RSSI }}"
+      unit_of_measurement: "dBm"
+      device_class: signal_strength
+      state_class: measurement
+      entity_category: diagnostic
+      expire_after: 1200
+
+    - name: "NeoCharge Uptime"
+      unique_id: neocharge_p12_930_uptime
+      state_topic: "log"
+      value_template: "{{ value_json.uptime }}"
+      unit_of_measurement: "s"
+      device_class: duration
+      state_class: total_increasing
+      entity_category: diagnostic
+      expire_after: 1200
+
+    - name: "NeoCharge Firmware Rev"
+      unique_id: neocharge_p12_930_rev
+      state_topic: "log"
+      value_template: "{{ value_json.rev }}"
+      entity_category: diagnostic
+      icon: "mdi:counter"
+      expire_after: 1200
+
+  binary_sensor:
+    - name: "NeoCharge Relay"
+      unique_id: neocharge_p12_930_relay
+      state_topic: "log"
+      value_template: "{{ 'ON' if value_json.RELAY == 1 else 'OFF' }}"
+      device_class: power
+      expire_after: 1200
+
+    - name: "NeoCharge Charging Paused"
+      unique_id: neocharge_p12_930_paused
+      state_topic: "log"
+      value_template: "{{ 'ON' if value_json.PAUSE else 'OFF' }}"
+      icon: "mdi:pause-octagon"
+      expire_after: 1200
+
+  # CONTROL: breaker-size / current-limit. Command format reverse-engineered via
+  # MITM capture of the NeoCharge app (2026-06-13): topic P12-XXX, msg:50
+  # SET_CURRENT_LIMIT; device ACKs msg:150 ACK_CURRENT_LIMIT and updates `limit`.
+  # Verified driving the device LOCALLY (cloud severed). Relay/pause = hardware
+  # auto-managed (no command exists). calibrate = msg:27 GET_CAL_OFFSET (read-only).
+  number:
+    - name: "NeoCharge Breaker Size"
+      unique_id: neocharge_p12_930_breaker_size
+      command_topic: "P12-XXX"
+      command_template: >-
+        {"UUID":"P12-XXX","msg":50,"hr_msg":"SET_CURRENT_LIMIT","limit":{{ value | int }},"rev":1900,"version":2,"time":{{ now().timestamp() | int }},"topic":"P12-XXX"}
+      state_topic: "log"
+      value_template: "{{ value_json.limit }}"
+      # Device accepts ONLY discrete breaker sizes {10,20,30,40,50} A — verified by
+      # probing (off-grid values return msg:250 CURRENT_LIMIT_OUT_OF_BOUNDS). step:10
+      # constrains the slider to valid values only.
+      min: 10
+      max: 50
+      step: 10
+      mode: slider
+      unit_of_measurement: "A"
+      icon: "mdi:fuse"
+      retain: false
+      optimistic: false
+
+  # CONTROL: charge / relay on-off via SCHEDULE_SYNC (msg:11). Reverse-engineered +
+  # verified driving the relay LOCALLY: ON = default_switch_on:true + always-on rule
+  # → RELAY_CLOSED; OFF = default_switch_on:false + always-off rule → RELAY_OPEN.
+  # Device requires UUID-format ids + a non-empty rule; meta.version NOT required.
+  # NOTE: relay also obeys autonomous dryer-priority load-sensing, so RELAY (and thus
+  # this switch's state) can read OFF while a higher-priority outlet draws power.
+  switch:
+    - name: "NeoCharge Charging"
+      unique_id: neocharge_p12_930_charging
+      command_topic: "P12-XXX"
+      payload_on: '{"id":"11111111-1111-1111-1111-111111111111","msg":11,"hr_msg":"SCHEDULE_SYNC","payload":{"meta":{"schema":2},"schedule":{"id":"22222222-2222-2222-2222-222222222222","is_enabled":true,"default_switch_on":true,"tz":"America/Los_Angeles","rules":[{"id":"33333333-3333-3333-3333-333333333333","from_timestamp":"2026-01-01 00:00:00","to_timestamp":"2037-01-01 00:00:00","hour_minute":{"from":"00:00","to":"23:59"},"switch_on":true,"weekdays":[0,1,2,3,4,5,6]}]}}}'
+      payload_off: '{"id":"11111111-1111-1111-1111-111111111111","msg":11,"hr_msg":"SCHEDULE_SYNC","payload":{"meta":{"schema":2},"schedule":{"id":"22222222-2222-2222-2222-222222222222","is_enabled":true,"default_switch_on":false,"tz":"America/Los_Angeles","rules":[{"id":"33333333-3333-3333-3333-333333333333","from_timestamp":"2026-01-01 00:00:00","to_timestamp":"2037-01-01 00:00:00","hour_minute":{"from":"00:00","to":"23:59"},"switch_on":false,"weekdays":[0,1,2,3,4,5,6]}]}}}'
+      state_topic: "log"
+      value_template: "{{ 'ON' if value_json.RELAY == 1 else 'OFF' }}"
+      # state_on/off MUST be explicit: for MQTT switches they default to
+      # payload_on/payload_off (the big SCHEDULE_SYNC JSON), which the value_template
+      # output ("ON"/"OFF") would never match → state stuck "unknown".
+      state_on: "ON"
+      state_off: "OFF"
+      icon: "mdi:ev-station"
+      retain: false
+      optimistic: false
+
+# Telemetry heartbeat: replay the server PING so the device keeps emitting `log`.
+automation:
+  - id: neocharge_ping_heartbeat
+    alias: "NeoCharge: emulate server PING (telemetry heartbeat)"
+    description: >-
+      Publishes the server's GoStatusUpdatePing to topic P12-XXX every 5 min.
+      The device answers with a full status report (msg:100 ACK_PING) on `log`,
+      feeding all the sensors above. Replaces the severed cloud's polling.
+    mode: single
+    triggers:
+      - trigger: time_pattern
+        minutes: "/5"
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: "P12-XXX"
+          qos: 0
+          payload: >-
+            {"UUID":"P12-XXX","msg":0,"rev":0,"hr_msg":"PING","debug":"GoStatusUpdatePing","time":{{ now().timestamp() | int }},"topic":"log"}
+
+  # The device ALSO publishes full status on topic `error` (QoS1) autonomously on
+  # reconnect (not just `log` on PING-ACK). Mirror those onto `log` so the same
+  # sensors populate instantly on a device reconnect, without waiting for a PING.
+  # (Bridge forwards `error` device->core-mosquitto; this republishes core `error`->`log`.)
+  - id: neocharge_error_to_log_mirror
+    alias: "NeoCharge: mirror error-topic status to log"
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: mqtt
+        topic: "error"
+    conditions:
+      - "{{ 'P12-XXX' in (trigger.payload | string) }}"
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: "log"
+          payload: "{{ trigger.payload }}"
