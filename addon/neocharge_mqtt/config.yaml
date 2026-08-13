@@ -1,0 +1,33 @@
+# NeoCharge device-facing MQTT broker — HA local addon.
+#
+# WAS a hand-run `docker run --network host eclipse-mosquitto:2` on the HAOS
+# host, which worked but tripped Supervisor's "unsupported system software"
+# flag (any container it doesn't manage is a foreign body). Converted to a
+# proper local addon 2026-08-13: same broker, same host networking, same
+# config file — Supervisor now owns start/stop/boot/logs.
+#
+# The broker exists because the NeoCharge Smart Splitter connects ANONYMOUSLY
+# and the primary broker can't safely allow that; this one accepts the device
+# and BRIDGES only its topics into the primary. The router DNATs the device's
+# cloud session to this listener.
+#
+# CONFIG IS NOT IN THIS REPO: the live mosquitto.conf (which carries the
+# bridge credentials for the primary broker) lives at
+# /share/neocharge-mqtt/mosquitto.conf on the HA host — editable without a
+# rebuild, never committed. A sanitized template is in tooling/.
+name: NeoCharge MQTT
+version: "1.1.0"
+slug: neocharge_mqtt
+description: >-
+  Anonymous device-facing Mosquitto for the NeoCharge Smart Splitter, bridging
+  its topics into the primary broker. Reads /share/neocharge-mqtt/mosquitto.conf.
+url: https://github.com/jphein/neocharge-local
+arch: [amd64]
+init: false
+startup: system
+boot: auto
+# The DNAT'd device session lands on a host port; a bridged container network
+# would not receive it.
+host_network: true
+map:
+  - share:ro
