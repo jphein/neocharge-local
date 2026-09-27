@@ -289,3 +289,7 @@ neocharge-local/
 - The live offloaded session **bypasses netfilter** (flow offloading), so the NAT-rule
   counters only tick on connection setup — that is expected/correct, not a failure.
 ```
+
+## License
+
+AGPL-3.0-or-later © 2026 Jeffrey Pine Hein. See [LICENSE](LICENSE).
